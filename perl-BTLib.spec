@@ -65,6 +65,9 @@ rm -rf $RPM_BUILD_ROOT
 
 
 %changelog
+* Mon Mar 06 2023 Christian Iseli <christian.iseli@unil.ch> 0.23-3
+- update for tito build (christian.iseli@unil.ch)
+
 * Mon Mar 06 2023 Christian Iseli <christian.iseli@unil.ch> 0.23-2
 - update for tito build (christian.iseli@unil.ch)
 
