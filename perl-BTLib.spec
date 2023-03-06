@@ -1,13 +1,11 @@
 Name:           perl-BTLib
 Version:        0.23
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Biology Toolkit Library Perl module
 
-Group:          Development/Libraries
 License:        GPL or Artistic
 URL:            http://estscan.sourceforge.net
-Source0:        http://dl.sf.net/estscan/BTLib-%{version}.tar.gz
-BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
+Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  perl
 BuildRequires:  perl(ExtUtils::MakeMaker)
