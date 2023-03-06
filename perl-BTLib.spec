@@ -67,6 +67,9 @@ rm -rf $RPM_BUILD_ROOT
 
 
 %changelog
+* Mon Mar 06 2023 Christian Iseli <christian.iseli@unil.ch> 0.23-1
+- new package built with tito
+
 * Mon Mar 06 2023 Christian Iseli <Christian.Iseli@unil.ch> 0.23-1
 - new package built with tito
 
