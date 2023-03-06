@@ -1,0 +1,115 @@
+#!/usr/bin/env perl
+
+# TODO things:
+
+# We need the following modules:
+use strict;
+use BTFile;
+use Getopt::Long;
+
+# Set POSIX locale for proper sorting
+$ENV{'LC_ALL'} = "POSIX";
+
+my %opt;
+my @options = ( "help", "head=s", "h=s", "skip!", "s!", "tail=s", "t=s",
+		"included!", "i!", "pattern=s", "p=s", "idLength=i", "l=i",
+		"lp=i", "ll=i", "m!" );
+
+$main::mStart = "^>";
+$main::skip = 1;
+$main::mStop = "^>";
+$main::inc = 0;
+$main::pat = '^>[^|]+\|([^\s|;]+)';
+$main::multi = 0;
+$main::idLen = 14;
+$main::posLen = 10;
+$main::lenLen = 6;
+
+if( ! GetOptions( \%opt, @options ) ) { &usage(); }
+
+# Override any default settings with arguments that the user has supplied
+
+$main::mStart = $opt{'head'}     if defined $opt{'head'};
+$main::mStart = $opt{'h'}        if defined $opt{'h'};
+$main::skip =   $opt{'skip'}     if defined $opt{'skip'};
+$main::skip =   $opt{'s'}        if defined $opt{'s'};
+$main::mStop =  $opt{'tail'}     if defined $opt{'tail'};
+$main::mStop =  $opt{'t'}        if defined $opt{'t'};
+$main::inc =    $opt{'included'} if defined $opt{'included'};
+$main::inc =    $opt{'i'}        if defined $opt{'i'};
+$main::pat =    $opt{'pattern'}  if defined $opt{'pattern'};
+$main::pat =    $opt{'p'}        if defined $opt{'p'};
+$main::idLen =  $opt{'idLength'} if defined $opt{'idLength'};
+$main::idLen =  $opt{'l'}        if defined $opt{'l'};
+$main::posLen = $opt{'lp'}       if defined $opt{'lp'};
+$main::lenLen = $opt{'ll'}       if defined $opt{'ll'};
+$main::multi =  $opt{'m'}        if defined $opt{'m'};
+
+&usage() if defined $opt{'help'};
+
+&usage() if $#ARGV < 1;
+
+my $src = BTFile->new($ARGV[0]);
+local *IDX;
+open IDX, "|sort -u >$ARGV[1]";
+my $packer = "A$main::idLen A$main::posLen A$main::lenLen";
+
+$src->openStream;
+my $strr;
+while (defined ($strr = $src->getNext($main::mStart, undef, $main::skip,
+				      $main::mStop, $main::inc))) {
+    my $start = $src->getReadOffset;
+    my $len = $src->getReadLength;
+    my @ids;
+    if ($main::multi != 0) {
+	@ids = $$strr =~ /$main::pat/sg;
+    } else {
+	($ids[0]) = $$strr =~ /$main::pat/s;
+    }
+    if ($main::mStart eq "^>" && $len > 1000000
+	&& $src->getVaryingLength() > 1) {
+	warn "Entry $ids[0] is not well behaved FASTA";
+    }
+    my $id;
+    foreach $id (@ids) {
+	next if $id eq "";
+	$id =~ tr/-a-z./_A-Z_/;
+	if (length($id) > $main::idLen) {
+	    warn "Id $id is longer than $main::idLen...";
+	}
+	if (length($start) > $main::posLen) {
+	    warn "Position of id $id is longer (" . length($start) .
+		") than $main::posLen";
+	}
+	if (length($len) > $main::lenLen) {
+	    warn "Length of id $id is longer (" . length($len) .
+		") than $main::lenLen";
+	}
+	my $rec = pack $packer, ($id, $start, $len);
+	print IDX "$rec\n";
+    }
+}
+close IDX;
+
+exit 0;
+
+sub usage {
+    print "indexer [options] <file> <index>
+  where options are:
+   -h|head      header pattern [$main::mStart]
+   -s|skip      skip junk [$main::skip]
+   -t|tail      tail pattern [$main::mStop]
+   -i|included  tail pattern is part of entry [$main::inc]
+   -p|pattern   id selection pattern [$main::pat]
+   -m           multiple indices per entry [$main::multi]
+   -l|idLength  maximum id length [$main::idLen]
+   -lp          maximum position length [$main::posLen]
+   -ll          maximum size length [$main::lenLen]
+
+The default should be fine for indexing FASTA files.
+indexer -h '^ID' -t '^//' -i -p '^ID\\s+(\\S+)' can be used for UG and SC
+
+To index all IDs and ACs of a swiss-prot entry, one can use:
+indexer -h '^ID' -t '^//' -i -p '^ID\\s+(\\S+)|AC   (\\w+)(?:; (\\w+))*' -m\n";
+    exit 1;
+}

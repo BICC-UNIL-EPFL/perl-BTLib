@@ -1,0 +1,438 @@
+#!/usr/bin/env perl
+
+# TODO things:
+
+# We need the following modules:
+use strict;
+use BTFile;
+use Getopt::Long;
+use Cwd 'abs_path';
+use File::Basename;
+
+$| = 1;
+
+my %opt;
+my @options = ( "help", "h", "config=s", "c=s", "w=i",
+		"f", "s", "r", "k", "m!", "t!", "l!" );
+
+$main::type = "raw";
+$main::crc = 0;
+$main::rev = 0;
+$main::sHead = 0;
+$main::width = 80;
+$main::multi = 0;
+$main::printLen = 0;
+$main::translate = 0;
+
+if( ! GetOptions( \%opt, @options ) ) { &usage(); }
+
+# Override any default settings with arguments that the user has supplied
+
+$main::config = "/etc/BTLib/fetch.conf";
+
+&usage() if defined($opt{'help'}) || defined($opt{'h'});
+
+$main::config = $opt{'config'} if defined $opt{'config'};
+$main::config = $opt{'c'}      if defined $opt{'c'};
+$main::width  = $opt{'w'}      if defined $opt{'w'};
+$main::type   = "fasta"        if defined $opt{'f'};
+$main::crc    = 1              if defined $opt{'s'};
+$main::multi  = $opt{"m"}      if defined $opt{"m"};
+$main::translate = $opt{"t"}   if defined $opt{"t"};
+$main::printLen = $opt{"l"}    if defined $opt{"l"};
+if (defined $opt{'k'}) {
+    $main::sHead  = 1;
+    $main::type   = "fasta";
+}
+if (defined $opt{'r'}) {
+    $main::rev = 1;
+    $main::type   = "fasta";
+}
+if ($main::translate != 0) {
+    $main::type   = "fasta";
+}
+if ($main::printLen != 0) {
+    $main::type   = "fasta";
+}
+
+&usage() if $#ARGV < 0 or $main::config eq "";
+
+local *FH;
+open FH, $main::config or die "Bad config file $main::config: $!";
+my $abs_path = abs_path($main::config);
+my $abs_dir = dirname $abs_path;
+my $use_base;
+while ( <FH> ) {
+    next if m"^#";
+    s/\s+$//;
+    my @a = split / /;
+    if ($#a == 0 and /^BASE=(\S+)$/) {
+      $use_base = $1;
+      $use_base = $abs_dir if $use_base eq ".";
+      next;
+    }
+    my @id = split /\|/, shift @a;
+    foreach (@id) {
+	$main::db{$_} = \@a;
+    }
+}
+close FH;
+
+my $retCode = 0;
+
+ MAIN:
+    while ($#ARGV >= 0) {
+	my $req = shift @ARGV;
+	my $sHead = $req;
+	my $colon = index $req, ":";
+	my $tag = "sw";
+	if ($colon >= 0) {
+	    $tag = substr $req, 0, $colon;
+	    $tag =~ tr/A-Z/a-z/;
+	    #$req =~ s/^[^:]+://;
+	    $req = substr $req, $colon + 1;
+	}
+	if (! defined($main::db{$tag})) {
+	    print STDERR "Unknown tag \"$tag\".\n";
+	    $retCode |= 1;
+	    next;
+	}
+	my (@start, @end);
+	my $minPos = undef;
+	my $maxPos = undef;
+	if ($req =~ s/\[(\d+\.\.\d+.*)\]$//) {
+	    $main::type = "fasta";
+	    my @lst = split /,/, $1;
+	    foreach my $l (@lst) {
+		my ($s, $e) = $l =~ /^(\d+)\.\.(\d+)/;
+		$s = 1 if $s <= 0;
+		$minPos = $s unless defined $minPos;
+		$minPos = $s if $s < $minPos;
+		$maxPos = $e if $e > $maxPos;
+		push @start, $s;
+		push @end, $e;
+	    }
+	}
+	my ($pStart, $pEnd);
+	if ($req =~ s/\[([^\]]*)\]$//) {
+	    $main::type = "fasta";
+	    my $s = $1;
+	    if ($s eq "" || $s eq "all") {
+		$pStart = 1;
+		$pEnd = -1;
+	    } elsif ($s =~ /^\d+$/) {
+		$pStart = $s;
+		$pEnd = $s;
+	    } elsif ($s =~ /^(\d+)-$/) {
+		$pStart = $1;
+		$pEnd = -1;
+	    } elsif ($s =~ /^(\d+)-(\d+)$/) {
+		$pStart = $1;
+		$pEnd = $2;
+	    }
+	}
+	my ($fType, $idx, $data) = @{$main::db{$tag}};
+	if ($fType !~ /^(fasta|embl|gb)/) {
+	    $minPos = undef;
+	    $maxPos = undef;
+	}
+	my @mRes;
+	my $res;
+	my $retPos = 0;
+	if ($fType =~ s/^direct-//) {
+	    $idx =~ s/^'([^']*)'$/$1/;
+	    my @ix = split /'/, $idx;
+	    my @d = split /\|/, $data;
+	    while (defined ($idx = shift @ix)) {
+		$data = shift @d;
+		if (defined $use_base) {
+		  $idx =~ s/^\.\//$use_base\//;
+		  $data =~ s/^\.\//$use_base\//;
+		}
+		if ($req =~ /$idx/) {
+		    $data = eval "\"$data\"";
+		    next unless -r $data;
+		    unless (open FH, $data) {
+			warn "Could not open file $data: $!";
+			next;
+		    }
+		    undef $/;
+		    $res = <FH>;
+		    $/ = "\n";
+		    close FH;
+		    push @mRes, $res;
+		    last;
+		}
+	    }
+	} else {
+	    my @ix;
+	    my @a = split /\|/, $idx;
+	    foreach (@a) {
+		my $p = glob;
+		$p =~ s/^\.\//$use_base\// if defined $use_base;
+		push @ix, $p;
+	    }
+	    my @d;
+	    @a = split /\|/, $data;
+	    foreach (@a) {
+		my $p = glob;
+		$p =~ s/^\.\//$use_base\// if defined $use_base;
+		push @d, $p;
+	    }
+	    while (defined ($idx = shift @ix)) {
+		$data = shift @d;
+		my $f;
+		if ($fType =~ /-(\d*\,\d*\,\d*)$/) {
+		    $f = BTFile->new("$idx"."[$1]", "", $data);
+		}  elsif ($fType =~ /-(\d+)$/) {
+		    $f = BTFile->new($idx, "", $data, $1);
+		} else {
+		    $f = BTFile->new($idx, "", $data);
+		}
+		if ($main::multi != 0) {
+		    $res = $f->fetch($req, undef, 1);
+		    if (defined $res) {
+			push @mRes, @$res;
+		    }
+		} else {
+		    if (defined $minPos) {
+			($retPos, $res)
+			    = $f->fetch($req, undef, undef, $minPos, $maxPos);
+		    } else {
+			$res = $f->fetch($req);
+		    }
+		    if (defined $res) {
+			push @mRes, $res;
+			last;
+		    }
+		}
+	    }
+	}
+	if ($#mRes < 0) {
+	    print STDERR "Could not find $tag:$req.\n";
+	    $retCode |= 2;
+	    next;
+	}
+	if ($main::type eq "raw" && !$main::crc) {
+	    foreach $res (@mRes) {
+		print $res;
+	    }
+	    next;
+	}
+	foreach $res (@mRes) {
+	    my $e;
+	  SWITCH:
+	    for ($fType) {
+		/^fasta/ && do {
+		    use FASTAEntry;
+		    $e = FASTAEntry->new;
+		    $e->parse(\$res);
+		    last SWITCH;
+		};
+		/^embl/ && do {
+		    use EMBLEntry;
+		    $e = EMBLEntry->new;
+		    $e->parse(\$res);
+		    if ($e->{_EMBLconstruct} ne "") {
+		      $retPos = &buildConstruct($e, $e->{_EMBLconstruct},
+						$minPos, $maxPos);
+		    }
+		    last SWITCH;
+		};
+		/^sp/ && do {
+		    use SPEntry;
+		    $e = SPEntry->new;
+		    $e->parse(\$res);
+		    last SWITCH;
+		};
+		/^epd/ && do {
+		    use EPDEntry;
+		    $e = EPDEntry->new;
+		    $e->parse(\$res);
+		    last SWITCH;
+		};
+		/^gb/ && do {
+		    use GBEntry;
+		    $e = GBEntry->new;
+		    $e->parse(\$res);
+		    if ($e->{_GBconstruct} ne "") {
+		      $retPos = &buildConstruct($e, $e->{_GBconstruct},
+						$minPos, $maxPos);
+		    }
+		    last SWITCH;
+		};
+		warn "Don't know how to transform $fType.\n";
+		$retCode |= 4;
+		next MAIN;
+	    }
+	    if ($main::type eq "fasta") {
+		if (defined $pStart) {
+		    my ($expected, $rPart) = $e->findParts;
+		    my $nb = $#$rPart + 1;
+		    if ($nb != $expected) {
+			warn "Bad number of parts $nb vs. $expected exp. in $req";
+		    }
+		    $pEnd = $nb if $pEnd == -1;
+		    if ($pStart > $nb) {
+			warn "There are only $nb parts in $req";
+			$retCode |= 8;
+			next;
+		    }
+		    if ($pEnd > $nb) {
+			warn "There are only $nb parts in $req";
+			$pEnd = $nb;
+		    }
+		    my ($h_head, $h_rest)
+			= $e->{_seqHead} =~ /^(>[^|]+\|[^|]+)\S+(.*)$/;
+		    $h_rest = "|" . $e->sv . $h_rest;
+		    if ($pEnd - $pStart != 0) {
+			my $i;
+			for ($i = $pStart; $i <= $pEnd; $i++) {
+			    my $p = $$rPart[$i - 1];
+			    my $seq = substr $e->{_seq}, $$p[0], $$p[1];
+			    $seq =~ s/(.{$main::width})/$1\n/g;
+			    $seq =~ s/\s+$//;
+			    print "${h_head}_$i$h_rest\n";
+			    print "$seq\n";
+			}
+			next;
+		    } else {
+			my $p = $$rPart[$pStart - 1];
+			$e->{_seq} = substr $e->{_seq}, $$p[0], $$p[1];
+			$e->{_seqHead} = "${h_head}_$pStart$h_rest";
+		    }
+		}
+		if ($#start >= 0) {
+		    my $s = $e->{_seq};
+		    my $head_started = 0;
+		    $e->{_seq} = "";
+		    $e->{_seqHead} =~ s/\s+$//;
+		    for my $i (0..$#start) {
+			my $l = $end[$i] - $start[$i] + 1;
+			my $s_part = substr($s, $start[$i] - 1 - $retPos, $l);
+			my $real_length = length $s_part;
+			if ($real_length == 0) {
+			    warn "$start[$i]..$end[$i] are off sequence";
+			} else {
+			    my $real_end = $end[$i];
+			    if ($real_length < $l) {
+				warn "Position $end[$i] is off sequence";
+				$real_end = $start[$i] + $real_length - 1;
+			    }
+			    if ($head_started) {
+				$e->{_seqHead} .= ",$start[$i]..$real_end";
+			    } else {
+				$head_started = 1;
+				$e->{_seqHead} .= "; $start[$i]..$real_end";
+			    }
+			    $e->{_seq} .= $s_part;
+			}
+		    }
+		    if ($head_started == 0) {
+			warn "No correct sequence part found";
+			$retCode |= 16;
+			next;
+		    }
+		}
+		if ($main::rev) {
+		    if ($fType =~ /^(sp|pir)/) {
+			warn "Cannot reverse complement protein sequence...";
+			next MAIN;
+		    }
+		    $e = $e->revComp;
+		}
+		if ($main::translate) {
+		    if ($fType =~ /^(sp|pir)/) {
+			warn "Cannot translate protein sequence...";
+			next MAIN;
+		    }
+		    $e = $e->toProt;
+		}
+		if ($main::crc) {
+		    my $crc = $e->crc64;
+		    my $head = $e->seqHead;
+		    $head =~ s/^(>\S+)/$1|$crc/;
+		    $e->seqHead($head);
+		}
+		if ($main::printLen) {
+		    my $l = $e->seqLength;
+		    my $head = $e->seqHead;
+		    $head .= "; LEN=$l";
+		    $e->seqHead($head);
+		}
+		if ($main::sHead != 0) {
+		    $e->seqHead(">$sHead");
+		}
+		$e->printFASTA(\*STDOUT, $main::width);
+		next;
+	    }
+	    if ($main::crc) {
+		print $e->crc64, "\n";
+		next;
+	    }
+	    print STDERR "Shouldn't get here...\n";
+	}
+    }
+
+exit $retCode;
+
+sub usage {
+    print "fetch [options] <tag> ...
+  where options are:
+   -h|--help            Show this stuff
+   -c|--config <file>   Use <file> as configuration file
+   -w <int>             Width of FASTA output [$main::width]
+   -f                   Produce FASTA output
+   -s                   Generate CRC64 checksums
+   -r                   Reverse complement sequence (implies -f)
+   -k                   Keep query name as FASTA header (implies -f)
+   -m                   Print all entries when multiple are found
+   -l                   Append sequence length (; LEN=n) to the FASTA header
+
+The default config file is $main::config
+
+Multiple tags can be specified, and they will be fetched in sequence.
+
+Specification of a subpart of HTG EMBL entries can be specified in square
+brackets after the tag e.g.:
+embl:AC002469[1]    gets the first part
+embl:AC002469[1-2]  gets the first and second parts as two FASTA entries
+embl:AC002469[] or
+embl:AC002469[all]  gets all the parts as FASTA entries
+
+One or more subparts of a sequence can be specified after the tag e.g.:
+embl:AC002469[1..100] gets base pairs 1 to 100 of the entry
+and
+embl:AC002469[1..100,200..250] gets base pairs 1 to 100 and 200 to 250 of
+the entry (useful to reconstruct spliced genes)
+
+And for the twisted mind: embl:AC002469[2][1..100] represents base pairs
+1 to 100 of the second part of entry embl:AC002469...\n";
+    exit 1;
+}
+
+sub buildConstruct {
+  my ($e, $con, $minPos, $maxPos) = @_;
+  my @J = split /,/, substr($con, 5, -1);
+  foreach my $j (@J) {
+    $j =~ s/:/[/;
+    my $res;
+    if ($j =~ s/^gap\((?:unk)?(\d+)\)$/$1/) {
+      $res = "N" x $j;
+    } else {
+      my $rev = "";
+      if ($j =~ s/^complement\((.*)\)$/$1/) {
+	$rev = " -r";
+      }
+      my $db = "svid";
+      if ($j =~ /^[A-Z][A-Z]_/) {
+	$db = "rvn";
+      }
+      $res = `$0$rev -c $main::config $db:$j]`;
+    }
+    $res =~ s/^>[^\n]+\s+//s;
+    $res =~ s/\s+//sg;
+    $e->{_seq} .= $res;
+  }
+  return 0;
+}

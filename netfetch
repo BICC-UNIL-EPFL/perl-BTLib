@@ -1,0 +1,678 @@
+#!/usr/bin/env perl
+#
+# netfetch, with ideas and code portions borrowed from Ed Hill's webpluck.
+#
+# History: 
+# (1) Started (chris July 10, 1997)
+#
+
+use strict;
+use Getopt::Long;
+use LWP;
+use HTML::Parser;
+use HTML::TreeBuilder;
+use HTML::FormatText;
+use IPC::Open3;
+use Symbol;
+
+# ---------------------------------------------------------------------------
+# Setup all the configuration information, and process the command line
+# arguments to see what things the user wants to change.
+# ---------------------------------------------------------------------------
+
+$|++;
+$main::config_file   = "/etc/BTLib/netfetch.conf";
+$main::proxy         = "";
+$main::debug         = 0;
+$main::uname         = "";
+$main::pass          = "";
+@main::targets       = ();
+@main::filters       = ();
+@main::candidates    = ();
+$main::id            = "";
+$main::base          = "";
+$main::host          = "";
+$main::output        = "";
+$main::out_ok        = 0;
+
+my( $cnt, %target_fields, $target, $theone, $got_target, ,@filterchain);
+
+# Get the user options and spit back a usage message if they do something silly
+
+my %opt;
+my @options = ( "help", "debug:i", "d:i", "config=s", "c=s", "proxy=s",
+	        "x=s", "user=s", "u=s", "password=s", "p=s",
+	        "b:s", "database=s", "h:s", "host=s", "f:s", "format=s" );
+
+if( ! GetOptions( \%opt, @options ) ) { &usage(); }
+
+# Override any default settings with arguments that the user has supplied
+
+if( $#ARGV != 0 ) { &usage(); }
+
+$main::id = $ARGV[0];
+
+&usage()                    if defined $opt{'help'};
+
+$main::config_file   = $opt{'config'}      if defined $opt{'config'};
+$main::config_file   = $opt{'c'}           if defined $opt{'c'};
+$main::proxy         = $opt{'proxy'}       if defined $opt{'proxy'};
+$main::proxy         = $opt{'x'}           if defined $opt{'x'};
+$main::debug         = $opt{'debug'}       if defined $opt{'debug'};
+$main::debug         = $opt{'d'}           if defined $opt{'d'};
+$main::uname         = $opt{'user'}        if defined $opt{'user'};
+$main::uname         = $opt{'u'}           if defined $opt{'u'};
+$main::pass          = $opt{'password'}    if defined $opt{'password'};
+$main::pass          = $opt{'p'}           if defined $opt{'p'};
+$main::base          = lc $opt{'b'}        if defined $opt{'b'};
+$main::base          = lc $opt{'database'} if defined $opt{'database'};
+$main::host          = lc $opt{'h'}        if defined $opt{'h'};
+$main::host          = lc $opt{'host'}     if defined $opt{'host'};
+$main::output        = lc $opt{'f'}        if defined $opt{'f'};
+$main::output        = lc $opt{'format'}   if defined $opt{'format'};
+
+if ($main::base eq "") {
+    my( @fields );
+    @fields = split /:/, $main::id;
+    &usage if $#fields == 0;
+    $main::base = lc shift @fields;
+    $main::id = join ':', @fields;
+}
+
+if( (defined( $opt{'debug'} ) || defined( $opt{'d'} )) && $main::debug == 0 ) {
+   $main::debug = 1; }
+    
+
+# This provides very simple proxy support for HTTP requests, if you need 
+# something more complicated, this is probably the place to set it up.  See
+# man LWP::UserAgent for more information on proxy setup.
+
+$main::ua = new LWP::UserAgent;
+$main::ua->agent( "netfetch/0.0" );
+$main::ua->proxy( 'http', $main::proxy ) if $main::proxy;
+
+
+# Dump the current configuration information if the user wants it...
+
+&debug( 3, "-"x78 . "\n" );
+&debug( 3, "Config File:   $main::config_file\n" );
+&debug( 3, "Proxy:         $main::proxy\n" ) if $main::proxy;
+&debug( 3, "Proxy:         none\n" )     unless $main::proxy;
+&debug( 3, "Debug Level:   $main::debug\n" );
+&debug( 3, "database:      $main::base\n" );
+&debug( 3, "host:          $main::host\n" );
+&debug( 3, "format:        $main::output\n" );
+&debug( 3, "ID:            $main::id\n" );
+&debug( 3, "-"x78 . "\n" );
+&debug( 3, "\n" );
+
+
+# ---------------------------------------------------------------------------
+# Read in the configuration file, and build target object based on each 
+# stanza in the file.
+# ---------------------------------------------------------------------------
+
+open( CONF, $main::config_file ) || die "Can't read $main::config_file: $!";
+while( <CONF> ) { 
+   $cnt++;
+   next if /^\#/ || /^\s*$/;
+   
+   if( /^(\S+)\s+(.*)$/ ) {
+      if( $1 eq "name" && $got_target ) {
+	 $target = Target->new( \%target_fields );
+	 if (lc $target->name() eq "filter") {
+	     push( @main::filters, $target );
+	 } else {
+	     push( @main::targets, $target );
+	 }
+	 undef %target_fields;
+	 $got_target = 0;
+	 $target_fields{$1} = $2;
+      } else {
+	 $got_target = 1; $target_fields{$1} = $2;
+      }
+   } else {
+      die "Invalid syntax in $main::config_file, line: $cnt\n";
+   }
+}
+$target = Target->new( \%target_fields );  # Don't forget the last one.
+if (lc $target->name() eq "filter") {
+    push( @main::filters, $target );
+} else {
+    push( @main::targets, $target );
+}
+close( CONF );
+
+
+# ---------------------------------------------------------------------------
+# Check which target best corresponds to the user request.
+# ---------------------------------------------------------------------------
+
+foreach $target ( @main::targets ) {
+    my( @fields, $found );
+
+    &debug( 2, "\n" ); &debug( 1, "Target: ", $target->name(), "\n" );
+
+    # Check if we have the correct database
+    if (!defined $target->get('type')) {
+	print STDERR "Warning: entry ", $target->name(), " has no type.\n";
+	next;
+    }
+    @fields = split / /, lc $target->get('type');
+    $found = 0;
+    while ($found == 0 && @fields > 0) {
+	$found = 1 if shift @fields eq $main::base;
+    }
+    next if $found == 0;
+
+    # Fine, now check if the user requested a specific host
+    if ($main::host ne "") {
+	next unless defined $target->get('host');
+	@fields = split / /, lc $target->get('host');
+	$found = 0;
+	while ($found == 0 && @fields > 0) {
+	    $found = 1 if shift @fields eq $main::host;
+	}
+	next if $found == 0;
+    }
+
+    # We now have a potential candidate.  Check to see if its output
+    # corresponds to the user's wish
+    $found = 1;
+    if ($main::output ne "") {
+	if (!defined $target->get('output')) {
+	    print STDERR "Warning: entry ", $target->name(),
+	      " has no output specification.\n";
+	    next;
+	}
+	$found = 0;
+	@fields = split / /, lc $target->get('output');
+	$found = 0;
+	while ($found == 0 && @fields > 0) {
+	    $found = 1 if shift @fields eq $main::output;
+	}
+    }
+    if ($found) {
+	# Keep only this candidate, since it satisfies all criteria
+	@main::candidates = ();
+	push( @main::candidates, $target );
+	$main::out_ok = 1;
+	last;
+    } else {
+	# This one is potentialy correct, provided we find an appropriate
+	# filter
+	push( @main::candidates, $target );
+    }
+}
+
+&debug( 3, "We have ", scalar(@main::candidates), " candidates\n" );
+
+foreach $target ( @main::candidates ) {
+    my( $found, $filt );
+    # Check to see if we have an available filter in case filtering
+    # is necessary
+    $found = 1;
+    if ($main::out_ok == 0) {
+	# Try to find a filter
+	$found = 0;
+	&debug( 3, "Trying to find a filter to produce ", $main::output, ".\n" );
+	foreach $filt ( @main::filters ) {
+	    my @fields = split / /, lc $filt->get('output');
+	    my @outs = split / /, lc $target->get('output');
+	    $found = 0;
+	    while ($found == 0 && @fields > 0) {
+		$found = 1 if shift @fields eq $main::output;
+	    }
+	    next unless $found;
+	    $found = 0;
+	    my $out;
+	    foreach $out ( @outs ) {
+		@fields = split / /, lc $filt->get('input');
+		while ($found == 0 && @fields > 0) {
+		    $found = 1 if shift @fields eq $out;
+		}
+		last if $found;
+	    }
+	    if ($found) {
+		$filterchain[0] = $filt;
+		$theone = $target;
+		last;
+	    }
+	}
+	next unless $found;
+    }
+}
+if ($main::out_ok == 0 && !defined $theone) {
+    # Try to find a series of two filters...
+    # With some effort, this could be expanded to allow multilevel
+    # filtering of higher order.  The idea would be:
+    #  1 find all filters producing the desired format
+    #  2 check if the input of those filters is compatible with our main output
+    #  3 if not, find a next layer of filters that produce output compatible
+    #    with the previous filter layer
+    #  4 go back to step 2.
+    # Some other day maybe...
+    # First find all filters that produce the wanted format
+    my @cand_filt = ();
+    my $filt;
+    foreach $filt ( @main::filters ) {
+	my @fields = split / /, lc $filt->get('output');
+	while (@fields > 0) {
+	    push @cand_filt, $filt if shift @fields eq $main::output;
+	}
+    }
+    # Now, find all filters that produce the input for one of the
+    # previously found filters
+    my @cand_filt2 = ();
+    my @cand_filt2_1 = ();
+    foreach $filt ( @cand_filt ) {
+	my @ins = split / /, lc $filt->get('input');
+	my $filt2;
+	foreach $filt2 ( @main::filters ) {
+	    my @fields = split / /, lc $filt2->get('output');
+	    my $found = 0;
+	    while ($found == 0 && @fields > 0) {
+		my $in;
+		my $field = shift @fields;
+		foreach $in ( @ins ) {
+		    $found = 1 if $field eq $in;
+		    last if $found;
+		}
+		last if $found;
+	    }
+	    push @cand_filt2, $filt2 if $found;
+	    push @cand_filt2_1, $filt if $found;
+	}
+    }
+    foreach $target ( @main::candidates ) {
+	# Try to find a filter
+	my $found = 0;
+	&debug( 3, "Trying to find two filters to produce ", $main::output, ".\n" );
+	my $i;
+	for ( $i = 0; $i < @cand_filt2; $i++ ) {
+	    my @outs = split / /, lc $target->get('output');
+	    my $out;
+	    foreach $out ( @outs ) {
+		my @fields = split / /, lc $cand_filt2[$i]->get('input');
+		while ($found == 0 && @fields > 0) {
+		    $found = 1 if shift @fields eq $out;
+		}
+		last if $found;
+	    }
+	    if ($found) {
+		$filterchain[0] = $cand_filt2[$i];
+		$filterchain[1] = $cand_filt2_1[$i];
+		$theone = $target;
+		last;
+	    }
+	}
+	last if $found;
+    }
+}
+die "Couldn't find a way to produce ", $main::output, " output format.\n"
+    unless $main::out_ok || defined $theone;
+my @potentials = ();
+@potentials = @main::candidates if $main::out_ok;
+$potentials[0] = $theone unless $main::out_ok;
+foreach $target ( @potentials ) {
+    my( $method );
+    # Ok, see how to retrieve the thing.
+    if (!defined $target->get('method')) {
+	print STDERR "Warning: entry ", $target->name(),
+	  " has no method. Assuming http.\n";
+	$method = "http";
+    }
+    $method = lc $target->get('method');
+    if ($method eq "http") {
+	if (!defined $target->get('url')) {
+	    print STDERR "Warning: entry ", $target->name(),
+	      " has access method http but no url field.\n";
+	    next;
+	}
+	my $url = $target->get('url');
+
+	# Insert the search key in the right place...
+	$url =~ s/%i%/$main::id/;
+	$target->fetch( $url );
+    } elsif ($method =~ "indirect \([0-9]+\)") {
+	# See how many levels there are
+	my $levels = $1;
+	my $i;
+	my $key = $main::id;
+	my (@meth, @option, @exp);
+	for ($i = 1; $i <= $levels; $i++) {
+	    $meth[$i] = $target->get("method$i");
+	    $option[$i] = $target->get("url$i") if $meth[$i] eq "http";
+	    $option[$i] = $target->get("command$i") if $meth[$i] eq "exec";
+	    $exp[$i] = $target->get("regex$i") if $i < $levels;
+	}
+	for ($i = 1; $i <= $levels; $i++) {
+	    if (!defined $meth[$i] || !defined $option[$i]) {
+		print STDERR "Warning: entry ", $target->name(),
+		  " has access method indirect $levels but incorrect fields.\n";
+		last;
+	    }
+	    my $opt = $option[$i];
+	    $opt =~ s/%i%/$key/;
+	    $target->fetch( $opt ) if $meth[$i] eq "http";
+	    $target->fetch_exe( $opt ) if $meth[$i] eq "exec";
+	    my $data = $target->get("_data");
+	    if ($i < $levels) {
+		my $regex = $exp[$i];
+		$data =~ /$exp[$i]/isg;
+		$key = $1;
+	    }
+	}
+    } elsif ($method eq "exec") {
+	if (!defined $target->get('command')) {
+	    print STDERR "Warning: entry ", $target->name(),
+	      " has access method exec but no command field.\n";
+	    next;
+	}
+	my $command = $target->get('command');
+
+	# Insert the search key in the right place...
+	$command =~ s/%i%/$main::id/;
+	$target->fetch_exe( $command );
+    } else {
+	print STDERR "Warning: entry ", $target->name(),
+	  " has unknown access method.\n";
+	next;
+    }
+    if ($main::out_ok == 0) {
+	my $filter;
+	foreach $filter (@filterchain) {
+	    $target->filter( $filter );
+	}
+    }
+    $target->printout();
+    exit 0;
+}
+
+print STDERR "Couldn't find how to fetch your request.\n";
+
+exit 1;
+
+
+
+
+# ---------------------------------------------------------------------------
+# Utility functions belonging to the main package
+# ---------------------------------------------------------------------------
+
+sub debug { 
+  my ($level, @stuff) = @_;
+  print STDERR @stuff if $level <= $main::debug;
+}
+
+sub usage {
+  print STDERR <<"_USAGE_";
+Usage: netfetch [options] id
+
+Where id is the identifier of the database object to be fetched, and options
+are one or more of the following:
+
+   --config FILE           Use 'FILE' as the configuration file.
+   --proxy URL             Use 'URL' as an HTTP proxy server.
+   --user USER             Use 'USER' to authenticate to sites when needed.
+   --password PASSWORD     Use 'PASSWORD' to authenticate to sites when needed.
+   --debug LEVEL           Output debugging information to STDERR.
+   --database DATABASE	   Use 'DATABASE' as the database to query.
+   --host HOST	           Use 'HOST' as the database host to query.
+   --format FORMAT	   Use 'FORMAT' as the output format.
+
+The database to query should either be indicated in the id
+(e.g., DATABASE:id) or be passed as a parameter.
+
+You can type "man netfetch" to get more detailed documentation.
+
+_USAGE_
+
+  exit 1;
+}
+
+
+# ===========================================================================
+# This class encapsulates a target URL that we want to pluck.  It holds the 
+# data about the information that we want to get, as well as provide the
+# functions that actually do the plucking...
+# ===========================================================================
+
+package Target;
+
+# The constructor for the class, it takes a reference to a hash, and sets up
+# the object to contain the data in that hash.
+
+sub new {
+  my ($class, $ref) = @_;
+  my ($key, $val);
+  my $self = {};
+
+  while ( ($key, $val) = each %$ref ) {
+    $self->{$key} = $val;
+  }
+  $self->{'_error'}  = "";
+  $self->{'_eerror'} = "";
+  $self->{'_ferror'} = "";
+  $self->{'_data'}   = "";
+
+  bless $self;
+  return $self;
+}
+
+# Lame versions of get and set methods... Some OO people will cringe here...
+
+sub set { my( $self, $key, $val ) = @_; $self->{$key} = $val; }
+sub get { my( $self, $key ) = @_;       return $self->{$key}; }
+
+sub name { return $_[0]->{'name'}; }
+
+
+# The filtering method through a command.
+
+sub filter_cmd {
+  my ($self, $filter) = @_;
+  my ($pid, $SIN, $SOUT, $SERR);
+  $SIN = gensym();
+  $SOUT = gensym();
+  $SERR = gensym();
+  &main::debug( 3, "Filtering using ", $filter->{'command'}, ".\n");
+  $pid = open3($SIN, $SOUT, $SERR, $filter->{'command'});
+  print $SIN $self->{'_data'};
+  close $SIN;
+  undef $/;
+  $self->{'_data'} = <$SOUT>;
+  $self->{'_ferror'} = <$SERR>;
+  close $SOUT;
+  close $SERR;
+}
+
+
+# The filtering method.
+
+sub filter {
+  my ($self, $filter) = @_;
+  if ($filter->{'command'} eq "internal") {
+    &main::debug( 3, "Internal HTML filtering.\n");
+    my $p = HTML::TreeBuilder->new(
+      implicit_tags  => 1,
+      ignore_unknown => 1,
+      ignore_text    => 0,
+      'warn'         => 0,
+    );
+    $p->strict_comment(1);
+    my $formatter = new HTML::FormatText;
+    $p->parse($self->{'_data'});
+    $self->{'_data'} = $formatter->format($p);
+    if (defined $filter->{'skipcol'}) {
+      $self->{'_data'} =~ s/^ {$filter->{'skipcol'}}//gm;
+    }
+    return;
+  }
+  $self->filter_cmd( $filter );
+}
+
+
+# The local command fetch method.
+
+sub fetch_exe {
+  my( $self, $command ) = @_;
+  my( $pid, $SIN, $SOUT, $SERR );
+  $SIN = gensym();
+  $SOUT = gensym();
+  $SERR = gensym();
+  &main::debug( 3, "Local fetching using ", $command, ".\n");
+  $pid = open3($SIN, $SOUT, $SERR, $command);
+  close $SIN;
+  undef $/;
+  $self->{'_data'} = <$SOUT>;
+  $self->{'_eerror'} = <$SERR>;
+  close $SOUT;
+  close $SERR;
+}
+
+
+# This prints out the representation of this object to the standard output.
+
+sub printout {
+  my $self = shift;
+  my $list;
+
+  if ($self->{'_eerror'} ne "" && $main::debug > 0) {
+    print STDERR "The standard error of the fetching process was not empty.\n";
+    print STDERR "  stderr:   ", $self->{'_eerror'}, "\n";
+    print STDERR "-"x78, "\n";
+  }
+
+  if ($self->{'_ferror'} ne "" && $main::debug > 0) {
+    print STDERR "The standard error of the filtering process was not empty.\n";
+    print STDERR "  stderr:   ", $self->{'_ferror'}, "\n";
+    print STDERR "-"x78, "\n";
+  }
+
+  if ($self->{'_error'} ne "") {
+    print STDERR "An error was encountered while fetching.\n";
+    print STDERR "  error:   ", $self->{'_error'}, "\n";
+    print STDERR "-"x78, "\n";
+    exit 1;
+  }
+
+  print $self->{'_data'};
+}
+
+
+# This does the dirty work, it goes out and retrieves the URL.
+
+sub fetch {
+  my ($self, $url) = @_;
+  my ($req, $res);
+
+  $self->{'_error'}   = "";
+  $req = HTTP::Request->new( GET => $url );
+  $req->header( Accept => "text/html, */*;q=0.1" );
+  $res = $main::ua->request( $req );
+
+  # Check to see if the URL requires authentication, and if we have enough
+  # information, supply a user name and password and try again.
+
+  if ($res->code() == 401) {
+    my $netloc = new URI::URL( $self->{'url'} )->netloc();
+    my $header = $res->header( "WWW-Authenticate" );
+    my ($realm) = $header =~ /realm=\"(.*)\"/;
+
+    my $uname = $main::uname if $main::uname;
+    my $pass  = $main::pass  if $main::pass;
+
+    $uname = $self->{'user'} if $self->{'user'};
+    $pass  = $self->{'pass'} if $self->{'pass'};
+
+    if ($uname eq "" || $pass eq "") {
+      $self->{'_error'} = 
+	"(401) Authentication Required, no login information supplied.";
+      &main::debug( 2, "  Could *not* retrieve URL - authentication " .
+		    "required, and not supplied.\n" );
+      next;
+    }
+
+    &main::debug( 2, "  Authentication required at remote site, " .
+		   "logging in as $uname.\n");
+
+    $main::ua->credentials( $netloc, $realm, $uname, $pass );
+    $res = $main::ua->request( $req );
+  }
+
+  # If there is still a problem, just handle it along with the rest of the 
+  # possible error messages.
+   
+  if ($res->is_success()) {
+    $self->{'_data'} = "";
+    &main::debug( 2, "  Retrieved URL from remote site.\n" );
+
+    $self->{'_data'} = $res->content();
+    # Remove some heading garbage.
+    $self->{'_data'} =~ s/^<PRE>//;
+
+    # If they really want to see what is returned from the remote site,
+    # perhaps so they can adjust their regular expression - then show them
+
+    &main::debug( 5, "  Content of URL\n" . $res->content() );
+  } else {
+    $self->{'_error'} = "(" . $res->code() . ") " . $res->message;
+    &main::debug( 2, "  Error retrieving URL: " . $self->{'_error'} . "\n" );
+  }
+}
+
+# A utility function that is used to replace a keyword in a string with the
+# value represented by that keyword.
+
+sub fixline {
+  my ($self, $line, $listref) = @_;
+  my $pair;
+
+  return $line if $line =~ /^\s*$/;
+
+  foreach $pair ( @$listref ) {
+    my ($key, $val) = $pair =~ /^(.*?):(.*)$/s;
+
+    if (defined($self->{"size-$key"})
+	&& length($val) > $self->{"size-$key"}) {
+      $val = substr( $val, 0, $self->{"size-$key"} ) . "..."; 
+    }
+
+    $line =~ s/$key/$val/g;
+  }
+
+  return $line;
+}
+
+# A utility function that take a time() value and converts it to a printable
+# string in the format I like.
+
+sub convert_date {
+  my ($self, $time) = @_;
+  my $post;
+  my ($tyear) = (localtime(time()))[5];
+  my ($min, $hour, $mday, $mon, $year) = (localtime($time))[1,2,3,4,5];
+  my (@mons) = qw( Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec );
+  my $str = $mons[$mon] . " $mday ";
+
+  if ($tyear != $year) {
+    $str .= 1900+$year . " ";
+  }
+
+  if ($hour < 12) {
+    $post = "am";
+  } else {
+    $post = "pm";
+  }
+  if ($hour == 0) {
+    $hour = 12;
+  }
+  if ($hour > 12) {
+    $hour -= 12;
+  }
+
+  $str .= sprintf "%2.2d:%2.2d$post", $hour, $min;
+
+  return $str;
+}
