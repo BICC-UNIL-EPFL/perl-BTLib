@@ -1,6 +1,6 @@
 Name:           perl-BTLib
 Version:        0.23
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        Biology Toolkit Library Perl module
 
 License:        GPL or Artistic
@@ -21,7 +21,7 @@ files.
 
 
 %prep
-%setup -q -n BTLib-%{version} 
+%setup -q
 # Help RPM depsolver find the requirements
 sed -i 's+/usr/bin/env perl+%{_bindir}/perl+' fetch indexer netfetch
 
