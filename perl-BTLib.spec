@@ -65,6 +65,9 @@ rm -rf $RPM_BUILD_ROOT
 
 
 %changelog
+* Thu Mar 09 2023 Christian Iseli <christian.iseli@unil.ch> 0.23-4
+- Fix file location detection in .ptr index files (christian.iseli@unil.ch)
+
 * Mon Mar 06 2023 Christian Iseli <christian.iseli@unil.ch> 0.23-3
 - update for tito build (christian.iseli@unil.ch)
 
