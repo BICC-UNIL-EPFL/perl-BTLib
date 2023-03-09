@@ -243,6 +243,7 @@ sub fetchPtr {
     sysread $FH, $s, $ll;
     my ($base) = $s =~ /^ 2\. DIR=(.*)/;
     $base =~ s/\s+$//;
+    $base =~ s/^\.\//$main::use_base\// if defined $main::use_base;
     # Get the file extension
     sysseek $FH, $ll * 2, SEEK_SET;
     sysread $FH, $s, $ll;

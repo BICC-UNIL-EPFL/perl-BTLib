@@ -1,6 +1,6 @@
 Name:           perl-BTLib
 Version:        0.23
-Release:        3%{?dist}
+Release:        4%{?dist}
 Summary:        Biology Toolkit Library Perl module
 
 License:        GPL or Artistic

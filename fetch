@@ -23,6 +23,7 @@ $main::width = 80;
 $main::multi = 0;
 $main::printLen = 0;
 $main::translate = 0;
+$main::use_base = undef;
 
 if( ! GetOptions( \%opt, @options ) ) { &usage(); }
 
@@ -61,14 +62,13 @@ local *FH;
 open FH, $main::config or die "Bad config file $main::config: $!";
 my $abs_path = abs_path($main::config);
 my $abs_dir = dirname $abs_path;
-my $use_base;
 while ( <FH> ) {
     next if m"^#";
     s/\s+$//;
     my @a = split / /;
     if ($#a == 0 and /^BASE=(\S+)$/) {
-      $use_base = $1;
-      $use_base = $abs_dir if $use_base eq ".";
+      $main::use_base = $1;
+      $main::use_base = $abs_dir if $main::use_base eq ".";
       next;
     }
     my @id = split /\|/, shift @a;
@@ -145,9 +145,9 @@ my $retCode = 0;
 	    my @d = split /\|/, $data;
 	    while (defined ($idx = shift @ix)) {
 		$data = shift @d;
-		if (defined $use_base) {
-		  $idx =~ s/^\.\//$use_base\//;
-		  $data =~ s/^\.\//$use_base\//;
+		if (defined $main::use_base) {
+		  $idx =~ s/^\.\//$main::use_base\//;
+		  $data =~ s/^\.\//$main::use_base\//;
 		}
 		if ($req =~ /$idx/) {
 		    $data = eval "\"$data\"";
@@ -169,14 +169,14 @@ my $retCode = 0;
 	    my @a = split /\|/, $idx;
 	    foreach (@a) {
 		my $p = glob;
-		$p =~ s/^\.\//$use_base\// if defined $use_base;
+		$p =~ s/^\.\//$main::use_base\// if defined $main::use_base;
 		push @ix, $p;
 	    }
 	    my @d;
 	    @a = split /\|/, $data;
 	    foreach (@a) {
 		my $p = glob;
-		$p =~ s/^\.\//$use_base\// if defined $use_base;
+		$p =~ s/^\.\//$main::use_base\// if defined $main::use_base;
 		push @d, $p;
 	    }
 	    while (defined ($idx = shift @ix)) {
