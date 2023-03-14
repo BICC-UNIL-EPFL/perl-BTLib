@@ -65,6 +65,9 @@ rm -rf $RPM_BUILD_ROOT
 
 
 %changelog
+* Tue Mar 14 2023 Christian Iseli <christian.iseli@unil.ch> 0.23-6
+- Use glob output in list context (christian.iseli@unil.ch)
+
 * Tue Mar 14 2023 Christian Iseli <christian.iseli@unil.ch> 0.23-5
 - Need to fix file path before glob (christian.iseli@unil.ch)
 
