@@ -65,6 +65,9 @@ rm -rf $RPM_BUILD_ROOT
 
 
 %changelog
+* Tue Mar 14 2023 Christian Iseli <christian.iseli@unil.ch> 0.23-5
+- Need to fix file path before glob (christian.iseli@unil.ch)
+
 * Thu Mar 09 2023 Christian Iseli <christian.iseli@unil.ch> 0.23-4
 - Fix file location detection in .ptr index files (christian.iseli@unil.ch)
 
