@@ -169,15 +169,15 @@ my $retCode = 0;
 	    my @a = split /\|/, $idx;
 	    foreach (@a) {
 		s/^\.\//$main::use_base\// if defined $main::use_base;
-		my $p = glob;
-		push @ix, $p;
+		my @p = glob;
+		push @ix, @p;
 	    }
 	    my @d;
 	    @a = split /\|/, $data;
 	    foreach (@a) {
 		s/^\.\//$main::use_base\// if defined $main::use_base;
-		my $p = glob;
-		push @d, $p;
+		my @p = glob;
+		push @d, @p;
 	    }
 	    while (defined ($idx = shift @ix)) {
 		$data = shift @d;
