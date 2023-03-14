@@ -168,15 +168,15 @@ my $retCode = 0;
 	    my @ix;
 	    my @a = split /\|/, $idx;
 	    foreach (@a) {
+		s/^\.\//$main::use_base\// if defined $main::use_base;
 		my $p = glob;
-		$p =~ s/^\.\//$main::use_base\// if defined $main::use_base;
 		push @ix, $p;
 	    }
 	    my @d;
 	    @a = split /\|/, $data;
 	    foreach (@a) {
+		s/^\.\//$main::use_base\// if defined $main::use_base;
 		my $p = glob;
-		$p =~ s/^\.\//$main::use_base\// if defined $main::use_base;
 		push @d, $p;
 	    }
 	    while (defined ($idx = shift @ix)) {
