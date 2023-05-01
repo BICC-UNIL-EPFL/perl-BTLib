@@ -118,6 +118,7 @@ sub new {
     $self->{_EMBLtaxo} = undef;
     $self->{_EMBLog} = undef;
     $self->{_EMBLcc} = [];
+    $self->{_EMBLas} = [];
     $self->{_EMBLft} = [];
     $self->{_EMBLcnta} = undef;
     $self->{_EMBLcntc} = undef;
@@ -197,7 +198,7 @@ sub parse {
     $self->{_EMBLdivision} = $d;
     $self->{_EMBLlen} = $l;
     while (defined ($_ = $lines[0])) {
-	/^(XX|FH)/ && do {
+	/^(XX|AH|FH)/ && do {
 	    shift @lines;
 	    next;
 	};
@@ -309,6 +310,13 @@ sub parse {
 	    s/^\s+//;
 	    s/\s+$//;
 	    push @{$self->{_EMBLcc}}, $_;
+	    shift @lines;
+	    next;
+	};
+	/^AS/ && do {
+	    s/^AS   //;
+	    s/\s+$//;
+	    push @{$self->{_EMBLas}}, $_;
 	    shift @lines;
 	    next;
 	};
@@ -443,6 +451,13 @@ sub printEMBL {
     if ($#{$self->{_EMBLcc}} >= 0) {
 	foreach (@{$self->{_EMBLcc}}) {
 	    print $out "CC   $_\n";
+	}
+	print $out "XX\n";
+    }
+    if ($#{$self->{_EMBLas}} >= 0) {
+	print $out "AH   LOCAL_SPAN      PRIMARY_IDENTIFIER   PRIMARY_SPAN   COMP\n";
+	foreach (@{$self->{_EMBLas}}) {
+	    print $out "AS   $_\n";
 	}
 	print $out "XX\n";
     }
