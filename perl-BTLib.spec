@@ -1,6 +1,6 @@
 Name:           perl-BTLib
 Version:        0.23
-Release:        6%{?dist}
+Release:        7%{?dist}
 Summary:        Biology Toolkit Library Perl module
 
 License:        GPL or Artistic
@@ -65,6 +65,10 @@ rm -rf $RPM_BUILD_ROOT
 
 
 %changelog
+* Wed Nov 22 2023 Christian Iseli <christian.iseli@unil.ch> 0.23-7
+- Parse assembly header (AH) and assembly information (AS) lines
+  (christian.iseli@epfl.ch)
+
 * Tue Mar 14 2023 Christian Iseli <christian.iseli@unil.ch> 0.23-6
 - Use glob output in list context (christian.iseli@unil.ch)
 
